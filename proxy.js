@@ -66,6 +66,13 @@ for (const index in webhooks) {
         const bodyString = Buffer.concat(body).toString();
         let isSensitive = false;
 
+        if (process.env.DEBUG === 'true') {
+          console.log(`[${new Date().toISOString()}] DEBUG: Response from Discord for ${req.originalUrl}`);
+          console.log(`  - Status: ${proxyRes.statusCode}`);
+          console.log('  - Headers:', JSON.stringify(proxyRes.headers, null, 2));
+          console.log('  - Body:', bodyString);
+        }
+
         // Only try to parse JSON if the content type is correct
         if (proxyRes.headers['content-type'] && proxyRes.headers['content-type'].includes('application/json')) {
           try {
@@ -80,9 +87,15 @@ for (const index in webhooks) {
         }
 
         if (isSensitive) {
+          if (process.env.DEBUG === 'true') {
+            console.log(`[${new Date().toISOString()}] DEBUG: Sensitive response detected. Blocking and sending 204.`);
+          }
           console.log(`[${new Date().toISOString()}] Blocked webhook info response for ${req.method} ${req.originalUrl}`);
           res.status(204).send(); // Send "No Content" to hide the response
         } else {
+          if (process.env.DEBUG === 'true') {
+            console.log(`[${new Date().toISOString()}] DEBUG: Forwarding non-sensitive response to client.`);
+          }
           console.log(`[${new Date().toISOString()}] ${req.method} ${req.originalUrl} -> ${proxyRes.statusCode}`);
           res.writeHead(proxyRes.statusCode, proxyRes.headers);
           res.end(bodyString);
@@ -96,8 +109,18 @@ for (const index in webhooks) {
     selfHandleResponse: true, // Let us handle the response to filter it
   });
 
-  // Apply the method filter before the proxy
-  app.use(path, methodFilter, proxy);
+  // Middleware for optional request logging
+  const requestLogger = (req, res, next) => {
+    if (process.env.DEBUG === 'true') {
+      console.log(`[${new Date().toISOString()}] DEBUG: Incoming Request for ${req.originalUrl}`);
+      console.log(`  - Method: ${req.method}`);
+      console.log('  - Headers:', JSON.stringify(req.headers, null, 2));
+    }
+    next();
+  };
+
+  // Apply the logger, then the method filter, then the proxy
+  app.use(path, requestLogger, methodFilter, proxy);
 }
 
 app.get('/', (req, res) => {

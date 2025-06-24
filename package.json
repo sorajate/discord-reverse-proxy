@@ -4,11 +4,15 @@
   "description": "A reverse proxy for Discord webhooks.",
   "main": "proxy.js",
   "scripts": {
-    "start": "node proxy.js"
+    "start": "node proxy.js",
+    "test": "node test.js"
   },
   "dependencies": {
     "dotenv": "^16.3.1",
     "express": "^4.18.2",
     "http-proxy-middleware": "^2.0.6"
+  },
+  "devDependencies": {
+    "node-fetch": "^2.7.0"
   }
 }

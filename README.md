@@ -54,6 +54,16 @@ npm start
 
 The server will run on `http://localhost:3000` by default. You will see a list of the configured proxy endpoints in the console.
 
+## Debugging
+
+To enable detailed logging of incoming requests, you can set the `DEBUG` flag in your `.env` file:
+
+```
+DEBUG=true
+```
+
+When enabled, the proxy will print the method, URL, and headers of every request it receives to the console.
+
 ## Usage
 
 To use the proxy, replace your original Discord webhook URL with the corresponding proxy URL in your application.
