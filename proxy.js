@@ -2,6 +2,7 @@ process.noDeprecation = true;
 require('dotenv').config();
 const express = require('express');
 const { createProxyMiddleware } = require('http-proxy-middleware');
+const zlib = require('zlib');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -66,54 +67,70 @@ for (const index in webhooks) {
         body.push(chunk);
       });
       proxyRes.on('end', () => {
-        const bodyBuffer = Buffer.concat(body); // Keep it as a buffer first
+        const bodyBuffer = Buffer.concat(body);
 
-        // Check if the response is JSON and needs to be inspected
-        if (proxyRes.headers['content-type'] && proxyRes.headers['content-type'].includes('application/json')) {
-          const bodyString = bodyBuffer.toString(); // Now convert to string for inspection
-          let isSensitive = false;
+        const forwardResponse = (buffer) => {
+          const headers = { ...proxyRes.headers };
+          // Since we buffered the response, we are no longer streaming chunked data.
+          // We must remove the chunked encoding header and set the content length.
+          delete headers['transfer-encoding'];
+          headers['content-length'] = buffer.length;
 
           if (process.env.DEBUG === 'true') {
-            // Log the string version for readable debug output
-            console.log(`[${new Date().toISOString()}] DEBUG: Response from Discord for ${req.originalUrl}`);
-            console.log(`  - Status: ${proxyRes.statusCode}`);
-            console.log('  - Headers:', JSON.stringify(proxyRes.headers, null, 2));
-            console.log('  - Body:', bodyString);
+            console.log(`[${new Date().toISOString()}] DEBUG: Forwarding response to client.`);
+          }
+          console.log(`[${new Date().toISOString()}] ${req.method} ${req.originalUrl} -> ${proxyRes.statusCode}`);
+          res.writeHead(proxyRes.statusCode, headers);
+          res.end(buffer);
+        };
+
+        // Only inspect JSON responses for sensitive data
+        if (proxyRes.headers['content-type'] && proxyRes.headers['content-type'].includes('application/json')) {
+          const encoding = proxyRes.headers['content-encoding'];
+          let decompressedBuffer;
+
+          try {
+            if (encoding === 'gzip') {
+              decompressedBuffer = zlib.gunzipSync(bodyBuffer);
+            } else if (encoding === 'deflate') {
+              decompressedBuffer = zlib.inflateSync(bodyBuffer);
+            } else if (encoding === 'br') {
+              decompressedBuffer = zlib.brotliDecompressSync(bodyBuffer);
+            } else {
+              decompressedBuffer = bodyBuffer;
+            }
+          } catch (err) {
+            if (process.env.DEBUG === 'true') {
+              console.error(`[${new Date().toISOString()}] DEBUG: Decompression failed. Forwarding original response.`, err);
+            }
+            forwardResponse(bodyBuffer);
+            return;
+          }
+
+          const bodyString = decompressedBuffer.toString();
+          if (process.env.DEBUG === 'true') {
+            console.log(`[${new Date().toISOString()}] DEBUG: Inspected Response Body:`, bodyString);
           }
 
           try {
             const data = JSON.parse(bodyString);
             if (data && data.token && data.url) {
-              isSensitive = true;
+              // Sensitive data found, block the response
+              if (process.env.DEBUG === 'true') {
+                console.log(`[${new Date().toISOString()}] DEBUG: Sensitive response detected. Blocking and sending 204.`);
+              }
+              console.log(`[${new Date().toISOString()}] Blocked webhook info response for ${req.method} ${req.originalUrl}`);
+              res.status(204).send();
+              return;
             }
           } catch (e) {
-            // Not valid JSON, so not sensitive. Let it pass through.
+            // Not valid JSON, so not sensitive.
           }
-
-          if (isSensitive) {
-            if (process.env.DEBUG === 'true') {
-              console.log(`[${new Date().toISOString()}] DEBUG: Sensitive response detected. Blocking and sending 204.`);
-            }
-            console.log(`[${new Date().toISOString()}] Blocked webhook info response for ${req.method} ${req.originalUrl}`);
-            res.status(204).send(); // Send "No Content" and stop
-            return; // IMPORTANT: exit here to prevent forwarding
-          }
-        } else if (process.env.DEBUG === 'true') {
-          // For non-JSON, log that we are forwarding binary data
-          console.log(`[${new Date().toISOString()}] DEBUG: Response from Discord for ${req.originalUrl}`);
-          console.log(`  - Status: ${proxyRes.statusCode}`);
-          console.log('  - Headers:', JSON.stringify(proxyRes.headers, null, 2));
-          console.log(`  - Body: <Binary data, length: ${bodyBuffer.length}>`);
         }
 
-        // If we've reached here, the response is not sensitive (or not JSON)
-        // Forward the original response buffer
-        if (process.env.DEBUG === 'true') {
-          console.log(`[${new Date().toISOString()}] DEBUG: Forwarding non-sensitive response to client.`);
-        }
-        console.log(`[${new Date().toISOString()}] ${req.method} ${req.originalUrl} -> ${proxyRes.statusCode}`);
-        res.writeHead(proxyRes.statusCode, proxyRes.headers);
-        res.end(bodyBuffer); // Send the raw buffer to prevent corruption
+        // If we reach here, the response is not JSON or not sensitive.
+        // Forward the original response buffer.
+        forwardResponse(bodyBuffer);
       });
     },
     onError: (err, req, res) => {
