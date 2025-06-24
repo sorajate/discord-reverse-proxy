@@ -42,6 +42,9 @@ for (const index in webhooks) {
     }
 
     // Block all other requests.
+    if (process.env.DEBUG === 'true') {
+      console.log(`[${new Date().toISOString()}] DEBUG: Blocking request with method ${req.method} for ${req.originalUrl}. Responding with 405.`);
+    }
     res.status(405).send('Method Not Allowed');
   };
 
