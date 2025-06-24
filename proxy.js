@@ -66,43 +66,54 @@ for (const index in webhooks) {
         body.push(chunk);
       });
       proxyRes.on('end', () => {
-        const bodyString = Buffer.concat(body).toString();
-        let isSensitive = false;
+        const bodyBuffer = Buffer.concat(body); // Keep it as a buffer first
 
-        if (process.env.DEBUG === 'true') {
-          console.log(`[${new Date().toISOString()}] DEBUG: Response from Discord for ${req.originalUrl}`);
-          console.log(`  - Status: ${proxyRes.statusCode}`);
-          console.log('  - Headers:', JSON.stringify(proxyRes.headers, null, 2));
-          console.log('  - Body:', bodyString);
-        }
-
-        // Only try to parse JSON if the content type is correct
+        // Check if the response is JSON and needs to be inspected
         if (proxyRes.headers['content-type'] && proxyRes.headers['content-type'].includes('application/json')) {
+          const bodyString = bodyBuffer.toString(); // Now convert to string for inspection
+          let isSensitive = false;
+
+          if (process.env.DEBUG === 'true') {
+            // Log the string version for readable debug output
+            console.log(`[${new Date().toISOString()}] DEBUG: Response from Discord for ${req.originalUrl}`);
+            console.log(`  - Status: ${proxyRes.statusCode}`);
+            console.log('  - Headers:', JSON.stringify(proxyRes.headers, null, 2));
+            console.log('  - Body:', bodyString);
+          }
+
           try {
             const data = JSON.parse(bodyString);
-            // Check for the sensitive keys that indicate a webhook info response
             if (data && data.token && data.url) {
               isSensitive = true;
             }
           } catch (e) {
-            // Not valid JSON, so not the sensitive response
+            // Not valid JSON, so not sensitive. Let it pass through.
           }
+
+          if (isSensitive) {
+            if (process.env.DEBUG === 'true') {
+              console.log(`[${new Date().toISOString()}] DEBUG: Sensitive response detected. Blocking and sending 204.`);
+            }
+            console.log(`[${new Date().toISOString()}] Blocked webhook info response for ${req.method} ${req.originalUrl}`);
+            res.status(204).send(); // Send "No Content" and stop
+            return; // IMPORTANT: exit here to prevent forwarding
+          }
+        } else if (process.env.DEBUG === 'true') {
+          // For non-JSON, log that we are forwarding binary data
+          console.log(`[${new Date().toISOString()}] DEBUG: Response from Discord for ${req.originalUrl}`);
+          console.log(`  - Status: ${proxyRes.statusCode}`);
+          console.log('  - Headers:', JSON.stringify(proxyRes.headers, null, 2));
+          console.log(`  - Body: <Binary data, length: ${bodyBuffer.length}>`);
         }
 
-        if (isSensitive) {
-          if (process.env.DEBUG === 'true') {
-            console.log(`[${new Date().toISOString()}] DEBUG: Sensitive response detected. Blocking and sending 204.`);
-          }
-          console.log(`[${new Date().toISOString()}] Blocked webhook info response for ${req.method} ${req.originalUrl}`);
-          res.status(204).send(); // Send "No Content" to hide the response
-        } else {
-          if (process.env.DEBUG === 'true') {
-            console.log(`[${new Date().toISOString()}] DEBUG: Forwarding non-sensitive response to client.`);
-          }
-          console.log(`[${new Date().toISOString()}] ${req.method} ${req.originalUrl} -> ${proxyRes.statusCode}`);
-          res.writeHead(proxyRes.statusCode, proxyRes.headers);
-          res.end(bodyString);
+        // If we've reached here, the response is not sensitive (or not JSON)
+        // Forward the original response buffer
+        if (process.env.DEBUG === 'true') {
+          console.log(`[${new Date().toISOString()}] DEBUG: Forwarding non-sensitive response to client.`);
         }
+        console.log(`[${new Date().toISOString()}] ${req.method} ${req.originalUrl} -> ${proxyRes.statusCode}`);
+        res.writeHead(proxyRes.statusCode, proxyRes.headers);
+        res.end(bodyBuffer); // Send the raw buffer to prevent corruption
       });
     },
     onError: (err, req, res) => {
